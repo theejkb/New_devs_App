@@ -6,6 +6,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Demo accounts shipped with the challenge seed (database/seed.sql).
+KNOWN_USER_TENANTS = {
+    "sunset@propertyflow.com": "tenant-a",
+    "ocean@propertyflow.com": "tenant-b",
+    "candidate@propertyflow.com": "tenant-a",
+}
+
 
 class TenantResolver:
     """Minimal tenant resolver that extracts tenant_id from JWT claims."""
@@ -69,27 +76,50 @@ class TenantResolver:
         return None
 
     @staticmethod
-    async def resolve_tenant_id(user_id: str, user_email: str, token: Optional[str] = None) -> str:
+    async def resolve_tenant_id(
+        user_id: str,
+        user_email: str,
+        token: Optional[str] = None,
+        user_data: Optional[dict] = None,
+    ) -> Optional[str]:
         """
-        Resolve tenant ID for a user.
-        
+        Resolve tenant ID for a user. This is the only place a tenant is minted.
+
         Args:
             user_id: User ID
             user_email: User email
-            
+            user_data: Optional identity payload carrying user_metadata/app_metadata
+
         Returns:
-            Tenant ID
+            Tenant ID, or None when the user cannot be attributed to a tenant.
+
+        There is deliberately no default tenant. Guessing one means handing an
+        unknown user a real client's data - this used to `return "tenant-a"` for
+        every unrecognised email, which defeats any tenant scoping downstream.
+        Callers must treat None as "no access".
         """
+        # The identity provider's own claim wins, so a user is answered the same
+        # way on every entry point (HTTP, websocket, /auth/me).
+        if user_data:
+            tenant_id = TenantResolver.resolve_tenant_from_user(user_data)
+            if tenant_id:
+                return tenant_id
+
         # Fallback mapping by known user email.
-        if user_email == "sunset@propertyflow.com":
-            return "tenant-a"
-        if user_email == "ocean@propertyflow.com":
-            return "tenant-b"
-        if user_email == "candidate@propertyflow.com":
-            return "tenant-a"
-            
-        # Default fallback
-        return "tenant-a"
+        tenant_id = KNOWN_USER_TENANTS.get((user_email or "").strip().lower())
+        if tenant_id:
+            return tenant_id
+
+        logger.warning("No tenant mapping for %s (%s) - refusing to guess", user_email, user_id)
+        return None
+
+    @staticmethod
+    def user_identity(user) -> dict:
+        """Shape a Supabase/mock user object into the dict resolve_* expects."""
+        return {
+            "user_metadata": getattr(user, "user_metadata", None) or {},
+            "app_metadata": getattr(user, "raw_app_metadata", None) or getattr(user, "app_metadata", None) or {},
+        }
 
     @staticmethod
     async def update_user_tenant_metadata(user_id: str, tenant_id: str) -> None:

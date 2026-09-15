@@ -1,0 +1,8 @@
+# Python bytecode (generated inside the backend container via the bind mount)
+__pycache__/
+*.py[cod]
+
+# NOTE: frontend/node_modules, frontend/.env and vite.config.ts.timestamp-*.mjs
+# are already tracked in this repository, and an ignore rule does not untrack a
+# file. Listing them here would only look like coverage. Untracking them is a
+# ~72k-file change, out of scope for this debugging exercise - see FINDINGS.md.

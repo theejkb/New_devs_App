@@ -100,6 +100,22 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Supabase connection pool initialization failed: {e}")
         # Continue startup - fallback to direct connections
 
+    # Initialize the Postgres pool used by the revenue queries, and open one
+    # connection: create_async_engine is lazy, so without this the first user
+    # request pays the full connect handshake and a bad DATABASE_URL is only
+    # discovered then.
+    try:
+        from .core.database_pool import db_pool
+
+        await db_pool.initialize()
+        async with db_pool.engine.connect():
+            pass
+        logger.info("✅ Database connection pool initialized and warmed")
+    except Exception as e:
+        logger.error(f"❌ Database pool initialization failed: {e}")
+        # Continue startup - revenue endpoints will fail loudly rather than
+        # serve numbers that are not backed by the database.
+
     # Initialize Redis connection with timeout
     try:
         await redis_client.initialize()
@@ -135,6 +151,16 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Supabase connection pool closed")
     except Exception as e:
         logger.warning(f"⚠️ Error closing connection pool: {e}")
+
+    # Dispose the Postgres pool - without this, `uvicorn --reload` leaks a full
+    # engine (20 + 30 connections) on every reload until Postgres refuses more.
+    try:
+        from .core.database_pool import db_pool
+
+        await db_pool.close()
+        logger.info("✅ Database connection pool closed")
+    except Exception as e:
+        logger.warning(f"⚠️ Error closing database pool: {e}")
 
 
 app = FastAPI(

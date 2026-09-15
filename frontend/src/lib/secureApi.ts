@@ -43,6 +43,18 @@ export class TenantIsolationError extends Error {
   }
 }
 
+/**
+ * Carries the HTTP status so callers can branch on it. Without this the status
+ * is lost in the generic `API request failed: ...` message and components end
+ * up regex-matching backend prose to recognise a 404.
+ */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export class SecureAPIClient {
   private static instance: SecureAPIClient;
   private backendUrl: string;
@@ -698,7 +710,7 @@ export class SecureAPIClient {
           }
 
           const msg = detail || bodyText || `${response.status} ${response.statusText}`;
-          throw new Error(`API request failed: ${msg}`);
+          throw new ApiError(`API request failed: ${msg}`, response.status);
         }
 
         // Handle response parsing based on content type and status
@@ -754,6 +766,11 @@ export class SecureAPIClient {
 
         // Don't retry on specific errors
         if (error instanceof TenantIsolationError) {
+          throw error;
+        }
+
+        // A 4xx is a decision, not a hiccup - retrying it just delays the answer.
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
           throw error;
         }
 
@@ -1450,22 +1467,21 @@ export class SecureAPIClient {
 
   // ============= DASHBOARD API =============
   /**
-   * Get dashboard summary with optional simulation header
+   * Get dashboard summary for a property.
+   *
+   * @security The tenant is resolved from the bearer token on the backend.
+   * A client-supplied tenant hint (the former `X-Simulated-Tenant` header) has
+   * no place here: it lets the caller name the tenant it wants to read.
    */
-  async getDashboardSummary(propertyId: string, options?: { simulatedTenant?: string, timestamp?: number }) {
+  async getDashboardSummary(propertyId: string, options?: { month?: number; year?: number }) {
     const queryParams = new URLSearchParams({ property_id: propertyId });
-    if (options?.timestamp) {
-      queryParams.append('_t', options.timestamp.toString());
-    }
+    // Forward whatever was passed. Dropping a half-specified period here would
+    // silently answer with the all-time total instead of the 400 the backend
+    // returns, i.e. exactly the kind of quiet fallback this PR removed.
+    if (options?.month !== undefined) queryParams.append('month', String(options.month));
+    if (options?.year !== undefined) queryParams.append('year', String(options.year));
 
-    const requestOptions: RequestInit = {};
-    if (options?.simulatedTenant) {
-      requestOptions.headers = {
-        'X-Simulated-Tenant': options.simulatedTenant
-      };
-    }
-
-    return this.request<any>(`/api/v1/dashboard/summary?${queryParams}`, requestOptions);
+    return this.request<any>(`/api/v1/dashboard/summary?${queryParams}`);
   }
 
   async uploadCompanyLogo(logo_url: string) {
