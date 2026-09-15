@@ -252,8 +252,18 @@ async def authenticate_request(
         logger.info(f"==================== TENANT ID EXTRACTION ====================")
         logger.info(f"User: {user.email} (ID: {user.id})")
 
-        # Use TenantResolver for comprehensive tenant resolution
-        tenant_id = await TenantResolver.resolve_tenant_id(token=token, user_id=user.id, user_email=user.email)
+        # Single resolution point, shared with the websocket and /auth/me paths,
+        # so one user cannot be told three different tenants. May return None,
+        # and None must stay None: a default tenant hands an unknown user real
+        # client data.
+        tenant_id = await TenantResolver.resolve_tenant_id(
+            token=token,
+            user_id=user.id,
+            user_email=user.email,
+            user_data=TenantResolver.user_identity(user),
+        )
+        if not tenant_id:
+            logger.warning("AUTH: %s has no tenant - tenant-scoped endpoints will deny access", user.email)
 
         # If we found a tenant_id and it's not in the user's metadata, update it for next time
         current_tenant_in_metadata = None
@@ -510,7 +520,12 @@ async def verify_token_ws(token: str) -> Optional[AuthenticatedUser]:
 
         # Use the comprehensive tenant resolver (same as regular auth)
         logger.info(f"WS_AUTH: Resolving tenant for user {user.email}")
-        tenant_id = await TenantResolver.resolve_tenant_id(token=token, user_id=user.id, user_email=user.email)
+        tenant_id = await TenantResolver.resolve_tenant_id(
+            token=token,
+            user_id=user.id,
+            user_email=user.email,
+            user_data=TenantResolver.user_identity(user),
+        )
 
         auth_user = AuthenticatedUser(
             id=user.id,
@@ -527,3 +542,22 @@ async def verify_token_ws(token: str) -> Optional[AuthenticatedUser]:
     except Exception as e:
         logger.error(f"WS_AUTH: Failed ({type(e).__name__}): {str(e)}")
         return None
+
+
+async def require_tenant(
+    current_user: AuthenticatedUser = Depends(authenticate_request),
+) -> AuthenticatedUser:
+    """Authenticate, and refuse the request unless the user has a tenant.
+
+    Tenant-scoped endpoints depend on this instead of re-implementing the check.
+    `AuthenticatedUser.tenant_id` is Optional by design - resolution returns None
+    rather than guessing a tenant - so somewhere has to turn None into a denial,
+    and one shared place is better than one per endpoint.
+    """
+    if not current_user.tenant_id:
+        logger.error("AUTH: denying tenant-scoped request for %s (no tenant)", current_user.email)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant associated with this account",
+        )
+    return current_user

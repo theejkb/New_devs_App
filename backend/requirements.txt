@@ -20,6 +20,7 @@ requests
 sendgrid
 sqlalchemy>=2.0.0
 supabase
+tzdata  # IANA database for zoneinfo (python:3.11-slim ships without it)
 tenacity>=8.0.0
 uvicorn[standard]
 wheel==0.45.1
